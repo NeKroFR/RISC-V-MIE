@@ -8,6 +8,7 @@ VERILATOR_FLAGS = -Wall --cc --exe --build -j 0 \
                   -Wno-WIDTHEXPAND \
                   -Wno-UNUSEDSIGNAL \
                   -Wno-PINMISSING \
+                  -Wno-CASEINCOMPLETE \
                   --x-initial unique \
                   tb.cpp $(V_SOURCES)
 

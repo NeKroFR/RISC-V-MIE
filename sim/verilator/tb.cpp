@@ -5,6 +5,10 @@ int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     VTop* top = new VTop;
 
+    // 0: only print on adress 0x80000000
+    // 1: debug prints
+    top->verbosity = 1;
+
     // RESET
     top->clk = 0;
     top->reset = 1;
