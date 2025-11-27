@@ -1,5 +1,5 @@
-TARGET  := hello_world
-SRCS    := main.c start.s
+TARGET   := hello_world
+SRCS     := main.c start.s
 
 OBJS     := $(SRCS:.c=.o)
 OBJS     := $(OBJS:.s=.o)
@@ -7,7 +7,7 @@ OBJS     := $(OBJS:.s=.o)
 CC       := riscv64-unknown-elf-gcc
 OBJCOPY  := riscv64-unknown-elf-objcopy
 
-CFLAGS   := -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -Os -Wall
+CFLAGS   := -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -Os -Wall -Wextra
 CFLAGS   += -mno-relax
 LDFLAGS  := -T linker.ld -Wl,--no-relax -Wl,-m,elf32lriscv
 
@@ -23,10 +23,13 @@ $(TARGET).elf: $(OBJS) linker.ld
 	$(CC) $(CFLAGS) -c $< -o $@
 
 imem.hex: $(TARGET).elf
-	$(OBJCOPY) -O verilog --verilog-data-width=4 $< $@
+	$(OBJCOPY) --only-section=.text* -O verilog --verilog-data-width=4 $< $@
 
 dmem.hex: $(TARGET).elf
-	-$(OBJCOPY) --dump-section .data=/dev/stdout $< 2>/dev/null | xxd -p | fold -w8 > $@ || echo "" > $@
+	$(OBJCOPY) --only-section=.rodata* --only-section=.data* \
+	           --change-addresses=-0x80000000 \
+	           -O verilog --verilog-data-width=4 $< $@ || \
+	           echo "@00000000 00000000" > $@
 
 clean:
 	rm -f $(OBJS) $(TARGET).elf *.hex
