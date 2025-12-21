@@ -19,5 +19,5 @@ int main() {
     char local[] = "[.text] Hello from RISC-V!\n";
     print(local);
     print(dmem);
-    while(1) {}
+    return 0;
 }

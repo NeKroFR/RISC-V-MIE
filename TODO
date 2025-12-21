@@ -1,0 +1,3 @@
+- FIX getchar, don't have to press enter first for hello_world
+- start.S catch when program return and write to an adress to stop sim
+- catch first printed char for hello_world
