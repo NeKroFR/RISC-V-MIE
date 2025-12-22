@@ -11,6 +11,7 @@ module Top #(
 
     localparam logic [31:0] UART_ADDR = 32'h4000_0000;
     localparam logic [31:0] UART_LSR  = 32'h4000_0004;
+    localparam logic [31:0] EXIT_ADDR = 32'h1000_0000;
 
     logic [31:0] pc, instr, mem_addr, mem_wdata, mem_rdata;
     logic [3:0]  mem_be;
@@ -67,6 +68,9 @@ module Top #(
                         $write("%c", mem_wdata[7:0]); 
                         $fflush(); 
                     end
+                end else if (mem_addr == EXIT_ADDR) begin
+                    $display("\n[EXIT] Program terminated at with return value %0d.", mem_wdata);
+                    $finish;
                 end else if (mem_addr[31:16] == 16'h8000) begin
                     // Write to DMEM
                     if (mem_be[0]) dmem[mem_addr[15:2]][7:0]   <= mem_wdata[7:0];

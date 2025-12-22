@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
     top->reset = 0;
     // Run simulation
     long long cycles = 0;
-    while (1) {
+    while (!Verilated::gotFinish()) {
         top->clk = 0;
         top->eval();
         top->clk = 1;

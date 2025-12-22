@@ -16,3 +16,7 @@ bss_loop:
     j bss_loop
 bss_done:
     call main
+_exit:
+    # Write 1 to 0x10000000
+    li a1, 0x10000000
+    sw a0, 0(a1)
