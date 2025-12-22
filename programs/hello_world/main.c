@@ -1,5 +1,8 @@
 #include <stdint.h>
 
+#define UART_ADDR     (*(volatile uint32_t*)0x40000000)
+#define UART_LSR    (*(volatile uint32_t*)0x40000004)
+
 char dmem[] = "[.data] Hello from RISC-V!\n";
 
 void *memcpy(void *dest, const void *src, uint32_t n) {
@@ -11,7 +14,7 @@ void *memcpy(void *dest, const void *src, uint32_t n) {
 
 void print(const char *str) {
     while (*str) {
-        *(volatile uint32_t*)0x80000000 = *str++;
+        UART_ADDR = *str++;
     }
 }
 

@@ -24,10 +24,12 @@ module riscv_cpu (
     assign pc_target = jalr ? (rd1 + imm_ext) : (pc + imm_ext);
     logic pc_src;
     assign pc_src = jump | taken;
-    always_ff @(posedge clk or posedge reset) begin
+
+    always_ff @(posedge clk) begin
         if (reset) pc <= 32'h0;
         else pc <= pc_next;
     end
+    
     assign pc_next = pc_src ? pc_target : pc_plus4;
     
     // Immediate Extend
