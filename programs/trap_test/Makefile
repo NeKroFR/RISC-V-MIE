@@ -1,4 +1,4 @@
-TARGET   := buffer_overflow
+TARGET   := trap_test
 SRCS     := main.c start.s
 
 OBJS     := $(SRCS:.c=.o)
@@ -7,7 +7,7 @@ OBJS     := $(OBJS:.s=.o)
 CC       := riscv64-unknown-elf-gcc
 OBJCOPY  := riscv64-unknown-elf-objcopy
 
-CFLAGS   := -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -Os -Wall -Wextra
+CFLAGS   := -march=rv32i_zicsr -mabi=ilp32 -ffreestanding -nostdlib -Os -Wall -Wextra
 CFLAGS   += -mno-relax
 LDFLAGS  := -T linker.ld -Wl,--no-relax -Wl,-m,elf32lriscv
 

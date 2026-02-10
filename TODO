@@ -1,3 +1,10 @@
-- FIX getchar, don't have to press enter first for hello_world
-- start.S catch when program return and write to an adress to stop sim
-- catch first printed char for hello_world
+# TODO
+
+- ~~PMP (Physical Memory Protection) — enforce U-mode memory isolation~~ ✅
+- Multi-cycle divider — drive stall signal for real timing
+- PAC (Pointer Authentication)
+- KTRR (Kernel Text Read-Only Region) — lock IMEM post-boot
+- MTE (Memory Tagging) — tag-based buffer overflow / UAF detection
+- APRR (Access Protection Rerouting) — runtime permission remapping
+- GXF (Guarded Exception Flag) — isolated secure execution context
+- SPRR (Secure Permission Remapping)

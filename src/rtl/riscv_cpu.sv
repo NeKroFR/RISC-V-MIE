@@ -11,7 +11,7 @@ module riscv_cpu (
     // Internal Signals
     logic [31:0] pc_next, pc_plus4, pc_target;
     logic [31:0] rd1, rd2, imm_ext, src_b, alu_result;
-    logic [3:0] alu_ctrl;
+    logic [4:0] alu_ctrl;
     logic reg_write, alu_src, zero, branch, jump, jalr, is_store;
     logic [2:0] result_src;
     logic taken;
@@ -19,19 +19,45 @@ module riscv_cpu (
     logic [31:0] load_val;
     logic [31:0] store_data;
 
+    // Trap / CSR Signals
+    logic [3:0] trap_cause;       // from controller
+    logic [3:0] trap_cause_merged; // after PMP fault merge
+    logic [31:0] trap_val;        // value for mtval
+    logic is_mret;
+    logic is_csr;
+    logic trap_taken;
+    logic [31:0] trap_pc;
+    logic [31:0] csr_rdata;
+    logic [31:0] csr_wdata;
+    logic [1:0] priv_mode;
+
+    // PMP signals
+    logic [31:0] pmpcfg0;
+    logic [31:0] pmpaddr [4];
+    logic        pmp_instr_fault;
+    logic        pmp_load_fault;
+    logic        pmp_store_fault;
+    logic        is_load;
+
+    // Stall: freezes pipeline when asserted (for multi-cycle operations)
+    logic stall;
+    assign stall = 1'b0;
+
     // PC Logic
     assign pc_plus4 = pc + 4;
-    assign pc_target = jalr ? (rd1 + imm_ext) : (pc + imm_ext);
+    assign pc_target = jalr ? ((rd1 + imm_ext) & ~32'b1) : (pc + imm_ext);
+    
     logic pc_src;
     assign pc_src = jump | taken;
 
     always_ff @(posedge clk) begin
         if (reset) pc <= 32'h0;
-        else pc <= pc_next;
+        else if (!stall) pc <= pc_next;
     end
     
-    assign pc_next = pc_src ? pc_target : pc_plus4;
-    
+    // Next PC Mux: Priority to Trap -> Branch/Jump -> Next
+    assign pc_next = trap_taken ? trap_pc : (pc_src ? pc_target : pc_plus4);
+
     // Immediate Extend
     always_comb begin
         case (instr[6:0])
@@ -54,6 +80,7 @@ module riscv_cpu (
         .opcode(instr[6:0]),
         .funct3(instr[14:12]),
         .funct7(instr[31:25]),
+        .funct12_0(instr[20]),
         .reg_write(reg_write),
         .result_src(result_src),
         .is_store(is_store),
@@ -61,17 +88,90 @@ module riscv_cpu (
         .alu_ctrl(alu_ctrl),
         .branch(branch),
         .jump(jump),
-        .jalr(jalr)
+        .jalr(jalr),
+        .trap_cause(trap_cause),
+        .is_mret(is_mret),
+        .is_csr(is_csr),
+        .priv_mode(priv_mode)
+    );
+
+    // Load detection for PMP
+    assign is_load = (instr[6:0] == 7'b0000011);
+
+    // PMP Unit
+    pmp_unit pmp (
+        .pmpcfg0(pmpcfg0),
+        .pmpaddr(pmpaddr),
+        .priv_mode(priv_mode),
+        .pc(pc),
+        .data_addr(alu_result),
+        .data_read(is_load),
+        .data_write(is_store),
+        .pmp_instr_fault(pmp_instr_fault),
+        .pmp_load_fault(pmp_load_fault),
+        .pmp_store_fault(pmp_store_fault)
+    );
+
+    // Merge PMP faults with controller trap_cause
+    // Priority: instr_fault (1) > controller trap > load_fault (5) > store_fault (7)
+    always_comb begin
+        if (pmp_instr_fault)
+            trap_cause_merged = 4'd1;  // instruction access fault
+        else if (trap_cause != 0)
+            trap_cause_merged = trap_cause;
+        else if (pmp_load_fault)
+            trap_cause_merged = 4'd5;  // load access fault
+        else if (pmp_store_fault)
+            trap_cause_merged = 4'd7;  // store/AMO access fault
+        else
+            trap_cause_merged = 4'd0;
+    end
+
+    // Compute trap_val: faulting address for PMP faults, 0 otherwise
+    always_comb begin
+        case (trap_cause_merged)
+            4'd1:    trap_val = pc;         // instruction access fault
+            4'd5:    trap_val = alu_result;  // load access fault
+            4'd7:    trap_val = alu_result;  // store access fault
+            default: trap_val = 32'd0;
+        endcase
+    end
+
+    // CSR write data: rs1 for CSRRW/S/C, zimm (zero-extended instr[19:15]) for CSRRWI/SI/CI
+    assign csr_wdata = instr[14] ? {27'b0, instr[19:15]} : rd1;
+
+    // CSR Unit
+    csr_unit csr (
+        .clk(clk),
+        .reset(reset),
+        .pc_current(pc),
+        .trap_cause(trap_cause_merged),
+        .trap_val(trap_val),
+        .is_mret(is_mret),
+        .trap_taken(trap_taken),
+        .trap_pc(trap_pc),
+        .csr_write(is_csr & ~trap_taken & ~stall),
+        .csr_addr(instr[31:20]),
+        .csr_wdata(csr_wdata),
+        .csr_op(instr[14:12]),
+        .csr_rdata(csr_rdata),
+        .priv_mode(priv_mode),
+        .pmpcfg0_out(pmpcfg0),
+        .pmpaddr_out(pmpaddr)
     );
 
     // Reg File
+    // Disable writes if a trap is being taken to prevent state corruption
+    logic reg_write_gated;
+    assign reg_write_gated = reg_write & ~trap_taken & ~stall;
+
     reg_file register_file_inst (
         .clk(clk),
         .rs1(instr[19:15]),
         .rs2(instr[24:20]),
         .rd(instr[11:7]),
         .wd3(result),
-        .we3(reg_write),
+        .we3(reg_write_gated),
         .rd1(rd1),
         .rd2(rd2)
     );
@@ -107,9 +207,9 @@ module riscv_cpu (
         case(instr[14:12]) // funct3
             3'b000: load_val = {{24{bytev[7]}}, bytev}; // lb
             3'b001: load_val = {{16{halfv[15]}}, halfv}; // lh
-            3'b010: load_val = mem_rdata; // lw
-            3'b100: load_val = {24'b0, bytev}; // lbu
-            3'b101: load_val = {16'b0, halfv}; // lhu
+            3'b010: load_val = mem_rdata;               // lw
+            3'b100: load_val = {24'b0, bytev};          // lbu
+            3'b101: load_val = {16'b0, halfv};          // lhu
             default: load_val = 32'b0;
         endcase
     end
@@ -118,7 +218,7 @@ module riscv_cpu (
     always_comb begin
         mem_be = 4'b0000;
         store_data = 32'b0;
-        if(is_store) begin
+        if(is_store && !trap_taken && !stall) begin
             case(instr[14:12])
                 3'b000: begin // sb
                     case(mem_addr[1:0])
@@ -185,6 +285,7 @@ module riscv_cpu (
             3'b010: result = pc_plus4;
             3'b011: result = pc + imm_ext;
             3'b100: result = imm_ext;
+            3'b101: result = csr_rdata;
             default: result = 32'b0;
         endcase
     end
