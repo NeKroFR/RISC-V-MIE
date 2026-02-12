@@ -1,6 +1,6 @@
 module reg_file #(
     parameter int unsigned REGS_WIDTH = 32,
-    parameter int unsigned REGS_DEPTH = 32 
+    parameter int unsigned REGS_DEPTH = 32
 ) (
     input  logic             clk,
     input  logic [4:0]       rs1,
@@ -9,10 +9,11 @@ module reg_file #(
     input  logic [REGS_WIDTH-1:0] wd3,
     input  logic             we3,
     output logic [REGS_WIDTH-1:0] rd1,
-    output logic [REGS_WIDTH-1:0] rd2
+    output logic [REGS_WIDTH-1:0] rd2,
+    input  logic [4:0]       rd_addr2,  // 3rd read port (AUT needs reg[rd])
+    output logic [REGS_WIDTH-1:0] rd3
 );
 
-    // Internal register array
     logic [REGS_WIDTH-1:0] rf [REGS_DEPTH-1:0];
 
     initial begin
@@ -21,14 +22,13 @@ module reg_file #(
         end
     end
 
-    // Synchronous write
     always_ff @(posedge clk) begin
         if (we3 && (rd != 5'd0)) begin
             rf[rd] <= wd3;
         end
     end
 
-    // Asynchronous read
     assign rd1 = (rs1 == 5'd0) ? '0 : rf[rs1];
     assign rd2 = (rs2 == 5'd0) ? '0 : rf[rs2];
+    assign rd3 = (rd_addr2 == 5'd0) ? '0 : rf[rd_addr2];
 endmodule

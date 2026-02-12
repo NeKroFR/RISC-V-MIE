@@ -8,7 +8,6 @@ module riscv_cpu (
     input logic [31:0] mem_rdata,
     output logic [3:0] mem_be
 );
-    // Internal Signals
     logic [31:0] pc_next, pc_plus4, pc_target;
     logic [31:0] rd1, rd2, imm_ext, src_b, alu_result;
     logic [4:0] alu_ctrl;
@@ -19,10 +18,10 @@ module riscv_cpu (
     logic [31:0] load_val;
     logic [31:0] store_data;
 
-    // Trap / CSR Signals
-    logic [3:0] trap_cause;       // from controller
-    logic [3:0] trap_cause_merged; // after PMP fault merge
-    logic [31:0] trap_val;        // value for mtval
+    // Trap / CSR
+    logic [3:0] trap_cause;
+    logic [4:0] trap_cause_merged;  // widened to fit PAC cause 18
+    logic [31:0] trap_val;
     logic is_mret;
     logic is_csr;
     logic trap_taken;
@@ -31,7 +30,7 @@ module riscv_cpu (
     logic [31:0] csr_wdata;
     logic [1:0] priv_mode;
 
-    // PMP signals
+    // PMP
     logic [31:0] pmpcfg0;
     logic [31:0] pmpaddr [4];
     logic        pmp_instr_fault;
@@ -39,14 +38,30 @@ module riscv_cpu (
     logic        pmp_store_fault;
     logic        is_load;
 
-    // Stall: freezes pipeline when asserted (for multi-cycle operations)
-    logic stall;
-    assign stall = 1'b0;
+    // PAC / QARMA
+    logic        is_pac;
+    logic        is_aut;
+    logic        pac_is_da;
+    logic        qarma_start, qarma_valid, qarma_busy;
+    logic [63:0] qarma_result;
+    logic [127:0] pac_ia_key, pac_da_key, pac_key_selected;
+    logic [31:0] rd3;                  // reg[rd] readback for AUT comparison
+    logic        pac_auth_fail;
 
-    // PC Logic
+    assign is_aut       = is_pac & instr[25];   // funct7[0]: 0=sign, 1=auth
+    assign pac_is_da    = instr[12];            // funct3[0]: 0=IA key, 1=DA key
+    assign pac_key_selected = pac_is_da ? pac_da_key : pac_ia_key;
+    assign qarma_start  = is_pac & ~qarma_busy;
+    assign pac_auth_fail = is_aut & qarma_valid & (qarma_result[31:0] != rd3);
+
+    // Stall the whole pipeline while QARMA is running
+    logic stall;
+    assign stall = is_pac & ~qarma_valid;
+
+    // PC
     assign pc_plus4 = pc + 4;
     assign pc_target = jalr ? ((rd1 + imm_ext) & ~32'b1) : (pc + imm_ext);
-    
+
     logic pc_src;
     assign pc_src = jump | taken;
 
@@ -54,28 +69,27 @@ module riscv_cpu (
         if (reset) pc <= 32'h0;
         else if (!stall) pc <= pc_next;
     end
-    
-    // Next PC Mux: Priority to Trap -> Branch/Jump -> Next
+
+    // Trap overrides branch/jump
     assign pc_next = trap_taken ? trap_pc : (pc_src ? pc_target : pc_plus4);
 
-    // Immediate Extend
+    // Immediate decode
     always_comb begin
         case (instr[6:0])
-            7'b0000011, 7'b0010011, 7'b1100111: // loads, I-ALU, jalr
+            7'b0000011, 7'b0010011, 7'b1100111: // I-type (loads, ALU, jalr)
                 imm_ext = {{20{instr[31]}}, instr[31:20]};
-            7'b0100011: // stores
+            7'b0100011: // S-type
                 imm_ext = {{20{instr[31]}}, instr[31:25], instr[11:7]};
-            7'b1100011: // branches
+            7'b1100011: // B-type
                 imm_ext = {{19{instr[31]}}, instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
-            7'b1101111: // jal
+            7'b1101111: // J-type
                 imm_ext = {{11{instr[31]}}, instr[31], instr[19:12], instr[20], instr[30:21], 1'b0};
-            7'b0010111, 7'b0110111: // auipc, lui
+            7'b0010111, 7'b0110111: // U-type (auipc, lui)
                 imm_ext = {instr[31:12], 12'b0};
             default: imm_ext = 32'b0;
         endcase
     end
-    
-    // Controller
+
     controller ctrl (
         .opcode(instr[6:0]),
         .funct3(instr[14:12]),
@@ -92,13 +106,12 @@ module riscv_cpu (
         .trap_cause(trap_cause),
         .is_mret(is_mret),
         .is_csr(is_csr),
+        .is_pac(is_pac),
         .priv_mode(priv_mode)
     );
 
-    // Load detection for PMP
     assign is_load = (instr[6:0] == 7'b0000011);
 
-    // PMP Unit
     pmp_unit pmp (
         .pmpcfg0(pmpcfg0),
         .pmpaddr(pmpaddr),
@@ -112,35 +125,36 @@ module riscv_cpu (
         .pmp_store_fault(pmp_store_fault)
     );
 
-    // Merge PMP faults with controller trap_cause
-    // Priority: instr_fault (1) > controller trap > load_fault (5) > store_fault (7)
+    // Fault merge: instr_fault > controller trap > PAC auth fail > load_fault > store_fault
     always_comb begin
         if (pmp_instr_fault)
-            trap_cause_merged = 4'd1;  // instruction access fault
+            trap_cause_merged = 5'd1;
         else if (trap_cause != 0)
-            trap_cause_merged = trap_cause;
+            trap_cause_merged = {1'b0, trap_cause};
+        else if (pac_auth_fail)
+            trap_cause_merged = 5'd18;
         else if (pmp_load_fault)
-            trap_cause_merged = 4'd5;  // load access fault
+            trap_cause_merged = 5'd5;
         else if (pmp_store_fault)
-            trap_cause_merged = 4'd7;  // store/AMO access fault
+            trap_cause_merged = 5'd7;
         else
-            trap_cause_merged = 4'd0;
+            trap_cause_merged = 5'd0;
     end
 
-    // Compute trap_val: faulting address for PMP faults, 0 otherwise
+    // mtval: faulting address for PMP/PAC, zero otherwise
     always_comb begin
         case (trap_cause_merged)
-            4'd1:    trap_val = pc;         // instruction access fault
-            4'd5:    trap_val = alu_result;  // load access fault
-            4'd7:    trap_val = alu_result;  // store access fault
+            5'd1:    trap_val = pc;
+            5'd5:    trap_val = alu_result;
+            5'd7:    trap_val = alu_result;
+            5'd18:   trap_val = rd1;         // the pointer that failed auth
             default: trap_val = 32'd0;
         endcase
     end
 
-    // CSR write data: rs1 for CSRRW/S/C, zimm (zero-extended instr[19:15]) for CSRRWI/SI/CI
+    // CSR write data: register value for CSRRW/S/C, zero-extended zimm for I-variants
     assign csr_wdata = instr[14] ? {27'b0, instr[19:15]} : rd1;
 
-    // CSR Unit
     csr_unit csr (
         .clk(clk),
         .reset(reset),
@@ -157,11 +171,12 @@ module riscv_cpu (
         .csr_rdata(csr_rdata),
         .priv_mode(priv_mode),
         .pmpcfg0_out(pmpcfg0),
-        .pmpaddr_out(pmpaddr)
+        .pmpaddr_out(pmpaddr),
+        .pac_ia_key_out(pac_ia_key),
+        .pac_da_key_out(pac_da_key)
     );
 
-    // Reg File
-    // Disable writes if a trap is being taken to prevent state corruption
+    // Gate register writes during traps and stalls
     logic reg_write_gated;
     assign reg_write_gated = reg_write & ~trap_taken & ~stall;
 
@@ -173,10 +188,23 @@ module riscv_cpu (
         .wd3(result),
         .we3(reg_write_gated),
         .rd1(rd1),
-        .rd2(rd2)
+        .rd2(rd2),
+        .rd_addr2(instr[11:7]),      // 3rd port: reads reg[rd] for AUT
+        .rd3(rd3)
     );
 
-    // ALU
+    qarma64 pac_engine (
+        .clk(clk),
+        .reset(reset),
+        .start(qarma_start),
+        .plaintext({32'b0, rd1}),
+        .tweak({32'b0, rd2}),
+        .key(pac_key_selected),
+        .result(qarma_result),
+        .valid(qarma_valid),
+        .busy(qarma_busy)
+    );
+
     assign src_b = alu_src ? imm_ext : rd2;
     alu core_alu (
         .src_a(rd1),
@@ -186,10 +214,9 @@ module riscv_cpu (
         .zero(zero)
     );
 
-
     assign mem_addr = alu_result;
-    
-    // Load extension
+
+    // Sub-word load alignment
     always_comb begin
         logic [1:0] addr_lo = mem_addr[1:0];
         logic [7:0] bytev;
@@ -204,7 +231,7 @@ module riscv_cpu (
             1'b0: halfv = mem_rdata[15:0];
             1'b1: halfv = mem_rdata[31:16];
         endcase
-        case(instr[14:12]) // funct3
+        case(instr[14:12])
             3'b000: load_val = {{24{bytev[7]}}, bytev}; // lb
             3'b001: load_val = {{16{halfv[15]}}, halfv}; // lh
             3'b010: load_val = mem_rdata;               // lw
@@ -214,7 +241,7 @@ module riscv_cpu (
         endcase
     end
 
-    // Store data alignment
+    // Sub-word store alignment + byte enables
     always_comb begin
         mem_be = 4'b0000;
         store_data = 32'b0;
@@ -222,34 +249,16 @@ module riscv_cpu (
             case(instr[14:12])
                 3'b000: begin // sb
                     case(mem_addr[1:0])
-                        2'b00: begin
-                            mem_be = 4'b0001;
-                            store_data[7:0] = rd2[7:0];
-                        end
-                        2'b01: begin
-                            mem_be = 4'b0010;
-                            store_data[15:8] = rd2[7:0];
-                        end
-                        2'b10: begin
-                            mem_be = 4'b0100;
-                            store_data[23:16] = rd2[7:0];
-                        end
-                        2'b11: begin
-                            mem_be = 4'b1000;
-                            store_data[31:24] = rd2[7:0];
-                        end
+                        2'b00: begin mem_be = 4'b0001; store_data[7:0]   = rd2[7:0]; end
+                        2'b01: begin mem_be = 4'b0010; store_data[15:8]  = rd2[7:0]; end
+                        2'b10: begin mem_be = 4'b0100; store_data[23:16] = rd2[7:0]; end
+                        2'b11: begin mem_be = 4'b1000; store_data[31:24] = rd2[7:0]; end
                     endcase
                 end
                 3'b001: begin // sh
                     case(mem_addr[1:0])
-                        2'b00: begin
-                            mem_be = 4'b0011;
-                            store_data[15:0] = rd2[15:0];
-                        end
-                        2'b10: begin
-                            mem_be = 4'b1100;
-                            store_data[31:16] = rd2[15:0];
-                        end
+                        2'b00: begin mem_be = 4'b0011; store_data[15:0]  = rd2[15:0]; end
+                        2'b10: begin mem_be = 4'b1100; store_data[31:16] = rd2[15:0]; end
                         default: ;
                     endcase
                 end
@@ -261,10 +270,10 @@ module riscv_cpu (
             endcase
         end
     end
-    
+
     assign mem_wdata = store_data;
 
-    // Branch taken
+    // Branch resolution
     always_comb begin
         case(instr[14:12])
             3'b000: taken = branch & zero;   // beq
@@ -276,16 +285,17 @@ module riscv_cpu (
             default: taken = 0;
         endcase
     end
-    
-    // Result Mux
+
+    // Result mux
     always_comb begin
         case (result_src)
             3'b000: result = alu_result;
             3'b001: result = load_val;
-            3'b010: result = pc_plus4;
-            3'b011: result = pc + imm_ext;
-            3'b100: result = imm_ext;
+            3'b010: result = pc_plus4;           // JAL/JALR link
+            3'b011: result = pc + imm_ext;       // AUIPC
+            3'b100: result = imm_ext;            // LUI
             3'b101: result = csr_rdata;
+            3'b110: result = qarma_result[31:0]; // PAC
             default: result = 32'b0;
         endcase
     end

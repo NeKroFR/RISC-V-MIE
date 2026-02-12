@@ -14,6 +14,7 @@ Simulated via Verilator with DPI-C for UART I/O.
 | RV32I | ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU + immediate variants, LB/H/W/BU/HU, SB/H/W, BEQ/NE/LT/GE/LTU/GEU, JAL, JALR, LUI, AUIPC, ECALL, EBREAK, FENCE (NOP), MRET |
 | RV32M | MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU |
 | Zicsr | CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI |
+| Custom-0 (PAC) | PACIA, PACDA, AUTIA, AUTDA |
 
 ## Datapath
 
@@ -28,31 +29,34 @@ Simulated via Verilator with DPI-C for UART I/O.
        ^                │  |  +------------+ ctrl  |        |           │    |
        |   pc           │  |  |            |──────>|        |           │    |
        |           instr│  |  | Controller |       +--------+           │    |
-  +----------+          │  |  |            |          | |               │    |
+  +----------+          │  |  |            |is_pac    | |               │    |
   | PC Mux   |         └──┤   +------------+   rd1,rd2| |alu_result     │    |
-  | tr/br/+4 |            |    |  ^  |             ^  | |               │    |
-  +----------+            |    |  |  |trap_cause   |  | v               │    |
-       ^                  |    |  |  |   +-------+ |  | +----------+    │    |
-       |   trap_pc        |    |  |  └──>| Fault | |  | |   PMP    |<───┘    |
-       |                  |    |  |      | Merge | |  | | 4 entries |        |
-  +----------+ priv_mode  |    |  |      +-------+ |  | +----------+         |
-  | CSR Unit |───────────>|    |  |          ^     |  |   ^  |               |
-  |  mstatus |            |    |  |  pmp_    |     |  |   |  |pmp_faults     |
-  |  mepc    | pmpcfg0,   |    |  |  faults  |     |  |   |  |               |
-  |  mcause  | pmpaddr    |    |  |          |     |  |   |  v               |
-  |  mtvec   |────────────┤    |  |     +----+-----+--+---+------+           |
-  |  mtval   |            |    |  |     |    Fault Merge         |           |
-  |  mscratch| csr_rdata  |    |  |     +------------------------+           |
+  | tr/br/+4 |            |    |  ^  |    |        ^  | |               │    |
+  +----------+            |    |  |  |trap |       |  | v               │    |
+       ^                  |    |  |  |    v        |  | +----------+    │    |
+       |   trap_pc        |    |  |  | +-------+   |  | |   PMP    |<───┘    |
+       |                  |    |  |  └>| Fault |   |  | | 4 entries |        |
+  +----------+ priv_mode  |    |  |    | Merge |   |  | +----------+         |
+  | CSR Unit |───────────>|    |  |    +-------+   |  |   ^  |               |
+  |  mstatus |            |    |  |     ^  ^  |    |  |   |  |pmp_faults     |
+  |  mepc    | pmpcfg0,   |    |  | pmp |pac |     |  |   |  |               |
+  |  mcause  | pmpaddr    |    |  |     |  | |     |  |   |  v               |
+  |  mtvec   |────────────┤    |  | +---+--+-+---+--+---+------+             |
+  |  mtval   |            |    |  | |      Fault Merge         |             |
+  |  mscratch| csr_rdata  |    |  | +--------------------------+             |
   |  pmpcfg0 |──────┐     |    |  |          |                               |
   |  pmpaddr |      |     |    |  |          | trap_cause_merged             |
-  +----------+<─────┤─────┤────┘  |          |                               |
-       ^            |     |       └──────────┘                               |
-       |            v     |                                                  |
-       |     +----------+ |  +----------+                                    |
-       └─────| ResultMux|─┤  | Reg File |                                    |
-             +----------+ |  | 32 x 32  |                                    |
-                          |  +----------+                                    |
-                          +---────────────────┬──────────────────────────────+
+  |  pac_keys|──┐   |     |    |  |          |                               |
+  +----------+<─┤───┤─────┤────┘  |          |                               |
+       ^        |   |     |       └──────────┘                               |
+       |        v   v     |                                                  |
+       |  +----------+    |  +----------+   rd3   +----------+               |
+       |  |          |    |  | Reg File |─────--─>|  QARMA   |  pac_result   |
+       └──| ResultMux|────┤  | 32 x 32  | rd1──-->|  64-5    |──────┐        |
+          +----------+    |  | +3rd port |  rd2──>| 14 cyc   |      │        |
+                          |  +----------+        +-----------+      │        |
+                          |        stall <──── ~valid & is_pac      │        |
+                          +───────────────────┬─────────────────────┘────────+
                                               | mem_addr
                                     +---------+---------+
                                     v                   v
@@ -80,6 +84,7 @@ else           => pc + 4
 | 011 | PC + imm (AUIPC) |
 | 100 | Immediate (LUI) |
 | 101 | CSR read value |
+| 110 | PAC result (QARMA-64 lower 32 bits) |
 
 ## Modules
 
@@ -88,9 +93,10 @@ Top-level. Connects CPU to memory and I/O. Loads `imem.hex` and `dmem.hex` at in
 Handles UART TX/RX and the exit mechanism.
 
 ### `riscv_cpu.sv`
-CPU core. PC logic, immediate decoder, controller/ALU/regfile/CSR/PMP instantiation,
+CPU core. PC logic, immediate decoder, controller/ALU/regfile/CSR/PMP/QARMA instantiation,
 load extension (LB/LH/LBU/LHU alignment), store alignment (SB/SH byte enables),
-branch resolution, PMP fault merge, result mux, and stall gating.
+branch resolution, PMP + PAC fault merge, result mux, and stall gating.
+QARMA-64 engine stalls the pipeline for 14 cycles during PAC/AUT instructions.
 
 ### `controller.sv`
 Combinational decoder. Inputs: opcode, funct3, funct7, funct12_0, priv_mode.
@@ -103,12 +109,22 @@ trap_cause, is_mret). ALU decoder maps funct3/funct7 to 5-bit ALU control.
 Division-by-zero and signed overflow handled per RISC-V spec.
 
 ### `reg_file.sv`
-32×32-bit register file. Async read, sync write. x0 hardwired to zero.
+32×32-bit register file. 2 async read ports (rs1, rs2) + 1 extra read port (rd_addr2/rd3
+for AUT instructions). Sync write. x0 hardwired to zero.
 
 ### `csr_unit.sv`
 CSR registers + trap/privilege logic. Handles trap entry (save state → M-mode),
 MRET (restore state from MPP), and CSR read-modify-write operations.
-Also holds the PMP registers (pmpcfg0, pmpaddr0–3) with lock bit enforcement.
+Holds PMP registers (pmpcfg0, pmpaddr0–3) with lock bit enforcement,
+and PAC key registers (pac_ia_key0–3, pac_da_key0–3).
+
+### `qarma64.sv`
+Multi-cycle QARMA-64-5 tweakable block cipher engine for PAC. 14-cycle iterative
+implementation: initial whitening → 5 forward rounds → pseudo-reflector (2 cycles) →
+5 backward rounds → final whitening. Pseudo-reflector split across 2 cycles to
+keep combinational depth uniform. Uses involutory S-box (σ₀) and involutory
+MixColumns (Midori-64 style). Driven by `start` pulse, asserts `valid` for
+1 cycle when result is ready.
 
 ### `pmp_unit.sv`
 Combinational PMP checker. 4 entries, checks PC (fetch) and ALU result (load/store)
@@ -178,6 +194,14 @@ When `trap_cause != 0`:
 | `0x3B1` | pmpaddr1 | PMP address register 1 |
 | `0x3B2` | pmpaddr2 | PMP address register 2 |
 | `0x3B3` | pmpaddr3 | PMP address register 3 |
+| `0x7C0` | pac_ia_key0 | PAC IA key bits [31:0] (M-mode only) |
+| `0x7C1` | pac_ia_key1 | PAC IA key bits [63:32] |
+| `0x7C2` | pac_ia_key2 | PAC IA key bits [95:64] |
+| `0x7C3` | pac_ia_key3 | PAC IA key bits [127:96] |
+| `0x7C4` | pac_da_key0 | PAC DA key bits [31:0] (M-mode only) |
+| `0x7C5` | pac_da_key1 | PAC DA key bits [63:32] |
+| `0x7C6` | pac_da_key2 | PAC DA key bits [95:64] |
+| `0x7C7` | pac_da_key3 | PAC DA key bits [127:96] |
 
 ### Trap Causes
 
@@ -190,6 +214,7 @@ When `trap_cause != 0`:
 | 7 | Store/AMO access fault (PMP) |
 | 8 | Environment call from U-mode |
 | 11 | Environment call from M-mode |
+| 18 | PAC authentication failure (AUTIA/AUTDA mismatch) |
 
 ## Physical Memory Protection (PMP)
 
@@ -238,7 +263,7 @@ For a region of size `2^n` bytes at base address `base`:
 | Load access | 5 | Address |
 | Store/AMO access | 7 | Address |
 
-Priority: `instr fault (1) > controller trap > load fault (5) > store fault (7)`
+Priority: `instr fault (1) > controller trap > PAC auth fail (18) > load fault (5) > store fault (7)`
 
 ### Lock Bit Writes
 
@@ -248,8 +273,51 @@ Priority: `instr fault (1) > controller trap > load fault (5) > store fault (7)`
 ## Stall Infrastructure
 
 A `stall` signal in `riscv_cpu.sv` gates PC updates, register writes, store operations,
-and CSR writes. Currently tied to `0` — will be driven by multi-cycle units
-(e.g., multi-cycle divider, memory wait states) once timing constraints require it.
+and CSR writes. Driven by PAC instructions: `stall = is_pac & ~qarma_valid`.
+QARMA-64 takes 14 cycles, so the pipeline freezes for 13 cycles (stall high on cycles 0–12,
+valid on cycle 13).
+
+## Pointer Authentication Code (PAC)
+
+Hardware pointer signing/verification using the QARMA-64-5 tweakable block cipher.
+Prevents ROP/JOP attacks by cryptographically binding pointers to a context.
+
+### Instructions
+
+Custom-0 opcode space (`0x0B`), R-type encoding. Allowed in both M-mode and U-mode.
+
+| funct7 | funct3 | Mnemonic | Operation |
+|--------|--------|----------|-----------|
+| 0000000 | 000 | PACIA rd,rs1,rs2 | rd = PAC(rs1, rs2, key_ia) |
+| 0000000 | 001 | PACDA rd,rs1,rs2 | rd = PAC(rs1, rs2, key_da) |
+| 0000001 | 000 | AUTIA rd,rs1,rs2 | trap(18) if PAC(rs1, rs2, key_ia) != rd |
+| 0000001 | 001 | AUTDA rd,rs1,rs2 | trap(18) if PAC(rs1, rs2, key_da) != rd |
+
+- **PACIA/PACDA**: Compute a 32-bit authentication code from pointer (rs1), modifier (rs2), and key. Result written to rd.
+- **AUTIA/AUTDA**: Recompute the PAC and compare against rd. If mismatch, trap with mcause=18 and mtval=rs1.
+- funct7[0]: 0 = sign (PAC), 1 = authenticate (AUT)
+- funct3[0]: 0 = IA key, 1 = DA key
+
+### QARMA-64-5
+
+64-bit tweakable block cipher. Plaintext = `{32'b0, pointer}`, tweak = `{32'b0, modifier}`,
+key = 128-bit from PAC CSRs. Result: lower 32 bits of ciphertext.
+
+14-cycle iterative pipeline (pseudo-reflector split across 2 cycles for uniform timing):
+1. Initial whitening: `IS = P ^ w0`
+2. Forward rounds 0–4: AddTweakey → ShuffleCells → MixColumns (skip round 0) → SubCells
+3. Pseudo-reflector part 1: AddTweakey(k0) → SubCells → MixColumns
+4. Pseudo-reflector part 2: SubCells → AddTweakey(k1)
+5. Backward rounds 4–0: SubCells → MixColumns (skip round 4) → InvShuffleCells → AddTweakey
+6. Final whitening: `C = IS ^ w1`
+
+Properties: involutory S-box (σ₀ = σ₀⁻¹), involutory MixColumns (M = M⁻¹).
+
+### PAC Key CSRs
+
+128-bit keys split across 4 CSRs each. Layout: `k0 = {key1, key0}` (core), `w0 = {key3, key2}` (whitening).
+M-mode only — U-mode access traps as illegal instruction. U-mode can execute PAC/AUT instructions
+(keys are used internally but not readable).
 
 ## Linker Layout
 

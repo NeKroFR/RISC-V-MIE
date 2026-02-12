@@ -1,8 +1,5 @@
 # TODO
 
-- ~~PMP (Physical Memory Protection) — enforce U-mode memory isolation~~ ✅
-- Multi-cycle divider — drive stall signal for real timing
-- PAC (Pointer Authentication)
 - KTRR (Kernel Text Read-Only Region) — lock IMEM post-boot
 - MTE (Memory Tagging) — tag-based buffer overflow / UAF detection
 - APRR (Access Protection Rerouting) — runtime permission remapping
