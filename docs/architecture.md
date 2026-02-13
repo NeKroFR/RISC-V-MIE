@@ -90,13 +90,15 @@ else           => pc + 4
 
 ### `Top.sv`
 Top-level. Connects CPU to memory and I/O. Loads `imem.hex` and `dmem.hex` at init.
-Handles UART TX/RX and the exit mechanism.
+Handles UART TX/RX and the exit mechanism. IMEM supports both read and write paths
+(KTRR enforcement happens in the CPU, not here).
 
 ### `riscv_cpu.sv`
 CPU core. PC logic, immediate decoder, controller/ALU/regfile/CSR/PMP/QARMA instantiation,
 load extension (LB/LH/LBU/LHU alignment), store alignment (SB/SH byte enables),
-branch resolution, PMP + PAC fault merge, result mux, and stall gating.
+branch resolution, PMP + PAC + KTRR fault merge, result mux, and stall gating.
 QARMA-64 engine stalls the pipeline for 14 cycles during PAC/AUT instructions.
+KTRR fault check is inline (two comparators, no separate module).
 
 ### `controller.sv`
 Combinational decoder. Inputs: opcode, funct3, funct7, funct12_0, priv_mode.
@@ -116,7 +118,8 @@ for AUT instructions). Sync write. x0 hardwired to zero.
 CSR registers + trap/privilege logic. Handles trap entry (save state → M-mode),
 MRET (restore state from MPP), and CSR read-modify-write operations.
 Holds PMP registers (pmpcfg0, pmpaddr0–3) with lock bit enforcement,
-and PAC key registers (pac_ia_key0–3, pac_da_key0–3).
+PAC key registers (pac_ia_key0–3, pac_da_key0–3),
+and KTRR registers (ktrr_base, ktrr_limit, ktrr_lock) with write-once lock.
 
 ### `qarma64.sv`
 Multi-cycle QARMA-64-5 tweakable block cipher engine for PAC. 14-cycle iterative
@@ -134,7 +137,7 @@ against pmpaddr/pmpcfg. Faults merge with controller trap causes in `riscv_cpu.s
 
 | Address | Size | Description |
 |---------|------|-------------|
-| `0x00000000` | 64 KiB | IMEM — instruction memory (read-only, loaded from `imem.hex`) |
+| `0x00000000` | 64 KiB | IMEM — instruction memory (read-write, loaded from `imem.hex`, lockable via KTRR) |
 | `0x10000000` | 4 B | EXIT — write here to terminate simulation (value = return code) |
 | `0x40000000` | 4 B | UART data — write: TX byte, read: RX byte |
 | `0x40000004` | 4 B | UART LSR — bit 0: RX ready, bit 5: TX ready (always 1) |
@@ -202,6 +205,9 @@ When `trap_cause != 0`:
 | `0x7C5` | pac_da_key1 | PAC DA key bits [63:32] |
 | `0x7C6` | pac_da_key2 | PAC DA key bits [95:64] |
 | `0x7C7` | pac_da_key3 | PAC DA key bits [127:96] |
+| `0x7C8` | ktrr_base | KTRR region start address (byte, inclusive) |
+| `0x7C9` | ktrr_limit | KTRR region end address (byte, exclusive) |
+| `0x7CA` | ktrr_lock | Bit 0: locked (write-once, cannot clear until reset) |
 
 ### Trap Causes
 
@@ -215,6 +221,7 @@ When `trap_cause != 0`:
 | 8 | Environment call from U-mode |
 | 11 | Environment call from M-mode |
 | 18 | PAC authentication failure (AUTIA/AUTDA mismatch) |
+| 24 | KTRR store fault (write to locked region) |
 
 ## Physical Memory Protection (PMP)
 
@@ -263,7 +270,7 @@ For a region of size `2^n` bytes at base address `base`:
 | Load access | 5 | Address |
 | Store/AMO access | 7 | Address |
 
-Priority: `instr fault (1) > controller trap > PAC auth fail (18) > load fault (5) > store fault (7)`
+Priority: `instr fault (1) > controller trap > PAC auth fail (18) > KTRR fault (24) > load fault (5) > store fault (7)`
 
 ### Lock Bit Writes
 
@@ -318,6 +325,36 @@ Properties: involutory S-box (σ₀ = σ₀⁻¹), involutory MixColumns (M = M�
 128-bit keys split across 4 CSRs each. Layout: `k0 = {key1, key0}` (core), `w0 = {key3, key2}` (whitening).
 M-mode only — U-mode access traps as illegal instruction. U-mode can execute PAC/AUT instructions
 (keys are used internally but not readable).
+
+## Kernel Text Read-Only Region (KTRR)
+
+Hardware-enforced immutable memory region. Once locked, stores to the protected range
+fault in all modes (M and U) with mcause=24. Loads and fetches are unaffected.
+
+### CSRs
+
+| Address | Name | Description |
+|---------|------|-------------|
+| `0x7C8` | ktrr_base | Start address of locked region (byte address, inclusive) |
+| `0x7C9` | ktrr_limit | End address of locked region (byte address, exclusive) |
+| `0x7CA` | ktrr_lock | Bit 0: locked. Write-once — once set, cannot be cleared until reset. |
+
+### Behavior
+
+- **Before lock**: All three CSRs are freely writable. IMEM is read-write.
+- **After lock** (`ktrr_lock[0] == 1`):
+  - Writes to `ktrr_base`, `ktrr_limit`, and `ktrr_lock` are silently ignored.
+  - Stores to addresses in `[ktrr_base, ktrr_limit)` trap with mcause=24, mtval=faulting address.
+  - Loads and instruction fetches from the region are unaffected.
+- **Reset**: All three registers reset to zero (unlocked, no region defined).
+
+### Fault
+
+| Fault | mcause | mtval |
+|-------|--------|-------|
+| KTRR store | 24 | Faulting store address |
+
+KTRR sits after PAC and before PMP data faults in the priority chain. It only fires on stores.
 
 ## Linker Layout
 

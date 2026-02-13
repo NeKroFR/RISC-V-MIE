@@ -38,6 +38,11 @@ module riscv_cpu (
     logic        pmp_store_fault;
     logic        is_load;
 
+    // KTRR
+    logic [31:0] ktrr_base, ktrr_limit;
+    logic        ktrr_locked;
+    logic        ktrr_fault;
+
     // PAC / QARMA
     logic        is_pac;
     logic        is_aut;
@@ -125,7 +130,12 @@ module riscv_cpu (
         .pmp_store_fault(pmp_store_fault)
     );
 
-    // Fault merge: instr_fault > controller trap > PAC auth fail > load_fault > store_fault
+    // KTRR fault: stores to locked region (priority resolved in fault merge)
+    assign ktrr_fault = ktrr_locked & is_store
+                      & (alu_result >= ktrr_base)
+                      & (alu_result < ktrr_limit);
+
+    // Fault merge: instr_fault > controller trap > PAC auth fail > ktrr_fault > load_fault > store_fault
     always_comb begin
         if (pmp_instr_fault)
             trap_cause_merged = 5'd1;
@@ -133,6 +143,8 @@ module riscv_cpu (
             trap_cause_merged = {1'b0, trap_cause};
         else if (pac_auth_fail)
             trap_cause_merged = 5'd18;
+        else if (ktrr_fault)
+            trap_cause_merged = 5'd24;
         else if (pmp_load_fault)
             trap_cause_merged = 5'd5;
         else if (pmp_store_fault)
@@ -148,6 +160,7 @@ module riscv_cpu (
             5'd5:    trap_val = alu_result;
             5'd7:    trap_val = alu_result;
             5'd18:   trap_val = rd1;         // the pointer that failed auth
+            5'd24:   trap_val = alu_result;  // KTRR: faulting store address
             default: trap_val = 32'd0;
         endcase
     end
@@ -173,7 +186,10 @@ module riscv_cpu (
         .pmpcfg0_out(pmpcfg0),
         .pmpaddr_out(pmpaddr),
         .pac_ia_key_out(pac_ia_key),
-        .pac_da_key_out(pac_da_key)
+        .pac_da_key_out(pac_da_key),
+        .ktrr_base_out(ktrr_base),
+        .ktrr_limit_out(ktrr_limit),
+        .ktrr_locked_out(ktrr_locked)
     );
 
     // Gate register writes during traps and stalls

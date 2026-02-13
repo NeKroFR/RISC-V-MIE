@@ -20,7 +20,11 @@ module csr_unit (
     output logic [31:0] pmpaddr_out [4],
 
     output logic [127:0] pac_ia_key_out,
-    output logic [127:0] pac_da_key_out
+    output logic [127:0] pac_da_key_out,
+
+    output logic [31:0] ktrr_base_out,
+    output logic [31:0] ktrr_limit_out,
+    output logic        ktrr_locked_out
 );
 
     logic [31:0] mstatus;   // MIE[3], MPIE[7], MPP[12:11]
@@ -38,10 +42,18 @@ module csr_unit (
     logic [31:0] pac_ia_key [4]; // 0x7C0–0x7C3
     logic [31:0] pac_da_key [4]; // 0x7C4–0x7C7
 
+    // KTRR (Kernel Text Read-Only Region)
+    logic [31:0] ktrr_base;     // 0x7C8
+    logic [31:0] ktrr_limit;    // 0x7C9
+    logic        ktrr_locked;   // 0x7CA bit 0
+
     assign pmpcfg0_out = pmpcfg0;
     assign pmpaddr_out = pmpaddr;
     assign pac_ia_key_out = {pac_ia_key[3], pac_ia_key[2], pac_ia_key[1], pac_ia_key[0]};
     assign pac_da_key_out = {pac_da_key[3], pac_da_key[2], pac_da_key[1], pac_da_key[0]};
+    assign ktrr_base_out  = ktrr_base;
+    assign ktrr_limit_out = ktrr_limit;
+    assign ktrr_locked_out = ktrr_locked;
 
     localparam [31:0] MTVEC_RESET = 32'h00000100;
 
@@ -67,6 +79,9 @@ module csr_unit (
             12'h7C5: csr_rdata = pac_da_key[1];
             12'h7C6: csr_rdata = pac_da_key[2];
             12'h7C7: csr_rdata = pac_da_key[3];
+            12'h7C8: csr_rdata = ktrr_base;
+            12'h7C9: csr_rdata = ktrr_limit;
+            12'h7CA: csr_rdata = {31'b0, ktrr_locked};
             default: csr_rdata = 32'b0;
         endcase
     end
@@ -103,6 +118,9 @@ module csr_unit (
             pac_da_key[1] <= 32'b0;
             pac_da_key[2] <= 32'b0;
             pac_da_key[3] <= 32'b0;
+            ktrr_base   <= 32'b0;
+            ktrr_limit  <= 32'b0;
+            ktrr_locked <= 1'b0;
             priv_mode <= 2'b11;
         end else begin
             if (trap_cause != 5'd0) begin
@@ -159,6 +177,9 @@ module csr_unit (
                     12'h7C5: pac_da_key[1] <= csr_new_val;
                     12'h7C6: pac_da_key[2] <= csr_new_val;
                     12'h7C7: pac_da_key[3] <= csr_new_val;
+                    12'h7C8: if (!ktrr_locked) ktrr_base  <= csr_new_val;
+                    12'h7C9: if (!ktrr_locked) ktrr_limit <= csr_new_val;
+                    12'h7CA: if (!ktrr_locked) ktrr_locked <= csr_new_val[0];
                     default: ;
                 endcase
             end

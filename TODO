@@ -1,6 +1,5 @@
 # TODO
 
-- KTRR (Kernel Text Read-Only Region) — lock IMEM post-boot
 - MTE (Memory Tagging) — tag-based buffer overflow / UAF detection
 - APRR (Access Protection Rerouting) — runtime permission remapping
 - GXF (Guarded Exception Flag) — isolated secure execution context

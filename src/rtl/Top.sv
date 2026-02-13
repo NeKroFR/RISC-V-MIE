@@ -34,10 +34,13 @@ module Top #(
         mem_rdata = 32'b0;
         if (mem_addr[31:16] == 16'h8000) begin
             mem_rdata = dmem[mem_addr[15:2]];
-        end 
+        end
+        else if (mem_addr[31:16] == 16'h0000) begin
+            mem_rdata = imem[mem_addr[15:2]];
+        end
         else if (mem_addr == UART_ADDR) begin
             mem_rdata = {24'b0, rx_buffer};
-        end 
+        end
         else if (mem_addr == UART_LSR) begin
             // Bit 5: TX Ready (always 1)
             // Bit 0: RX Ready
@@ -77,6 +80,12 @@ module Top #(
                     if (mem_be[1]) dmem[mem_addr[15:2]][15:8]  <= mem_wdata[15:8];
                     if (mem_be[2]) dmem[mem_addr[15:2]][23:16] <= mem_wdata[23:16];
                     if (mem_be[3]) dmem[mem_addr[15:2]][31:24] <= mem_wdata[31:24];
+                end else if (mem_addr[31:16] == 16'h0000) begin
+                    // Write to IMEM
+                    if (mem_be[0]) imem[mem_addr[15:2]][7:0]   <= mem_wdata[7:0];
+                    if (mem_be[1]) imem[mem_addr[15:2]][15:8]  <= mem_wdata[15:8];
+                    if (mem_be[2]) imem[mem_addr[15:2]][23:16] <= mem_wdata[23:16];
+                    if (mem_be[3]) imem[mem_addr[15:2]][31:24] <= mem_wdata[31:24];
                 end
             end
 
