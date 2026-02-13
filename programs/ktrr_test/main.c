@@ -108,6 +108,10 @@ int main() {
     *imem_test = 0x12345678;   // should fault
     check("mcause=24", TRAP_MCAUSE, 24);
 
+    // Test 5b: Verify the store was actually blocked
+    print("[5b] Store blocked... ");
+    check("value preserved", *imem_test, 0xDEADBEEF);
+
     // Test 6: mtval check — should contain the faulting address
     print("[6] mtval check... ");
     check("mtval", TRAP_MTVAL, 0x0000F000);

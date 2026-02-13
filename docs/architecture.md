@@ -38,15 +38,16 @@ Simulated via Verilator with DPI-C for UART I/O.
        |                  |    |  |  └>| Fault |   |  | | 4 entries |        |
   +----------+ priv_mode  |    |  |    | Merge |   |  | +----------+         |
   | CSR Unit |───────────>|    |  |    +-------+   |  |   ^  |               |
-  |  mstatus |            |    |  |     ^  ^  |    |  |   |  |pmp_faults     |
-  |  mepc    | pmpcfg0,   |    |  | pmp |pac |     |  |   |  |               |
-  |  mcause  | pmpaddr    |    |  |     |  | |     |  |   |  v               |
-  |  mtvec   |────────────┤    |  | +---+--+-+---+--+---+------+             |
-  |  mtval   |            |    |  | |      Fault Merge         |             |
+  |  mstatus |            |    |  |     ^  ^  ^    |  |   |  |pmp_faults     |
+  |  mepc    | pmpcfg0,   |    |  | pmp |pac|ktrr  |  |   |  |               |
+  |  mcause  | pmpaddr    |    |  |     |  | |  |  |  |   |  v               |
+  |  mtvec   |────────────┤    |  | +---+--+-+--+--+---+------+             |
+  |  mtval   |            |    |  | |       Fault Merge        |             |
   |  mscratch| csr_rdata  |    |  | +--------------------------+             |
   |  pmpcfg0 |──────┐     |    |  |          |                               |
   |  pmpaddr |      |     |    |  |          | trap_cause_merged             |
   |  pac_keys|──┐   |     |    |  |          |                               |
+  | ktrr_regs|──┤   |     |    |  |          |                               |
   +----------+<─┤───┤─────┤────┘  |          |                               |
        ^        |   |     |       └──────────┘                               |
        |        v   v     |                                                  |
@@ -102,8 +103,9 @@ KTRR fault check is inline (two comparators, no separate module).
 
 ### `controller.sv`
 Combinational decoder. Inputs: opcode, funct3, funct7, funct12_0, priv_mode.
-Outputs: all control signals (reg_write, alu_ctrl, branch, jump, is_store, is_csr,
-trap_cause, is_mret). ALU decoder maps funct3/funct7 to 5-bit ALU control.
+Outputs: all control signals (reg_write, result_src, alu_src, alu_ctrl, branch, jump,
+jalr, is_store, is_csr, is_pac, trap_cause, is_mret). ALU decoder maps funct3/funct7
+to 5-bit ALU control.
 
 ### `alu.sv`
 5-bit control, 32-bit datapath. Base ops (ADD–SLTU) at `0_xxxx`, M-extension at `1_0xxx`
@@ -286,8 +288,8 @@ valid on cycle 13).
 
 ## Pointer Authentication Code (PAC)
 
-Hardware pointer signing/verification using the QARMA-64-5 tweakable block cipher.
-Prevents ROP/JOP attacks by cryptographically binding pointers to a context.
+Signs and verifies pointers using QARMA-64-5 (tweakable block cipher).
+Each pointer gets a cryptographic tag tied to a context value, so corrupted pointers fail verification.
 
 ### Instructions
 
@@ -328,8 +330,8 @@ M-mode only — U-mode access traps as illegal instruction. U-mode can execute P
 
 ## Kernel Text Read-Only Region (KTRR)
 
-Hardware-enforced immutable memory region. Once locked, stores to the protected range
-fault in all modes (M and U) with mcause=24. Loads and fetches are unaffected.
+Locks a physical address range so nothing can write to it — not even M-mode.
+Once locked, stores to the protected range trap with mcause=24. Loads and fetches still work.
 
 ### CSRs
 
@@ -347,6 +349,7 @@ fault in all modes (M and U) with mcause=24. Loads and fetches are unaffected.
   - Stores to addresses in `[ktrr_base, ktrr_limit)` trap with mcause=24, mtval=faulting address.
   - Loads and instruction fetches from the region are unaffected.
 - **Reset**: All three registers reset to zero (unlocked, no region defined).
+- **Note**: If `ktrr_base >= ktrr_limit`, the range is empty and no stores are blocked.
 
 ### Fault
 

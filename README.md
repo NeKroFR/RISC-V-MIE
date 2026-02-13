@@ -23,11 +23,11 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture docum
 
 | Status | Feature | Apple Equivalent | Purpose |
 | :---:  | ------- | ---------------- | ------- |
-| ✅ | **PAC** | Pointer Auth | Cryptographically signs pointers to prevent ROP/JOP attacks. QARMA-64-5 cipher, 14-cycle latency. |
-| ❌ | **APRR** | APRR | **Access Protection Rerouting.** Allows the kernel to restrict its own permissions (e.g., make pages Read-Only) without TLB flushes. |
-| ❌ | **GXF** | GXF / Guarded Mode | **Guarded Exception Flag.** Provides a secure execution mode with separate register states, acting as a hardware barrier between standard kernel and a higher-privilege guarded context. |
-| ✅ | **PMP** | — | **Physical Memory Protection.** 4 hardware entries enforce R/W/X permissions per region. M-mode configures, U-mode is restricted. Lock bit extends enforcement to M-mode. |
-| ✅ | **KTRR** | KTRR / KIP | **Kernel Text Read-Only Region.** A hard-locked physical memory range that becomes immutable post-boot, preventing kernel patches. |
-| ❌ | **SPRR** | SPRR | **Secure Permission Remapping.** Remaps page table permission bits dynamically. Works alongside APRR to enforce granular access controls. |
-| ❌ | **MTE** | Memory Tagging | Assigns "colors" (tags) to memory blocks and pointers to prevent Use-After-Free and Buffer Overflows. |
-| ❌ | **EMTE** | *Enhanced MTE* | **Experimental.** Extends MTE with synchronous tag checking and canonical validation to block overflows without async faults. |
+| ✅ | **PAC** | Pointer Auth | Signs pointers with QARMA-64-5 to kill ROP/JOP. 14-cycle latency. |
+| ❌ | **APRR** | APRR | Lets the kernel tighten its own permissions (e.g. make pages RO) without TLB flushes. |
+| ❌ | **GXF** | GXF / Guarded Mode | Separate execution context with its own register state, walled off from the normal kernel. |
+| ✅ | **PMP** | — | 4 hardware entries enforce R/W/X per region. M-mode configures, U-mode is restricted. Lock bit applies to M-mode too. |
+| ✅ | **KTRR** | KTRR / KIP | Locks a physical memory range as immutable post-boot. Not even M-mode can write to it. |
+| ❌ | **SPRR** | SPRR | Remaps page table permission bits at runtime. Works with APRR for fine-grained control. |
+| ❌ | **MTE** | Memory Tagging | Tags memory and pointers with "colors" to catch UAF and buffer overflows. |
+| ❌ | **EMTE** | *Enhanced MTE* | Extends MTE with synchronous tag checks and canonical validation. |
