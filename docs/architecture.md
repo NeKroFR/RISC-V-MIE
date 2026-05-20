@@ -4,7 +4,7 @@
 
 RV32IM CPU with Zicsr extension and M/U privilege modes.
 Stall-capable datapath (multi-cycle operations supported via stall signal).
-Harvard architecture — separate instruction and data memory.
+Harvard architecture, separate instruction and data memory.
 Simulated via Verilator with DPI-C for UART I/O.
 
 ## ISA Support
@@ -18,61 +18,14 @@ Simulated via Verilator with DPI-C for UART I/O.
 
 ## Datapath
 
-```
-                            +------------------------------------------------+
-                            |                    riscv_cpu                   |
-                            |                                                |
-  +----------+   instr      |  +----------+  imm   +--------+                |
-  |   IMEM   |──────────────┤  | Imm Ext  |───────>|        |                |
-  |  64 KiB  |──────────┐  |  +----------+         |  ALU   |  alu_result    |
-  +----------+          │  |                       | RV32IM |───────────┐    |
-       ^                │  |  +------------+ ctrl  |        |           │    |
-       |   pc           │  |  |            |──────>|        |           │    |
-       |           instr│  |  | Controller |       +--------+           │    |
-  +----------+          │  |  |            |is_pac    | |               │    |
-  | PC Mux   |         └──┤   +------------+   rd1,rd2| |alu_result     │    |
-  | tr/br/+4 |            |    |  ^  |    |        ^  | |               │    |
-  +----------+            |    |  |  |trap |       |  | v               │    |
-       ^                  |    |  |  |    v        |  | +----------+    │    |
-       |   trap_pc        |    |  |  | +-------+   |  | |   PMP    |<───┘    |
-       |                  |    |  |  └>| Fault |   |  | | 4 entries |        |
-  +----------+ priv_mode  |    |  |    | Merge |   |  | +----------+         |
-  | CSR Unit |───────────>|    |  |    +-------+   |  |   ^  |               |
-  |  mstatus |            |    |  |     ^  ^  ^    |  |   |  |pmp_faults     |
-  |  mepc    | pmpcfg0,   |    |  | pmp |pac|ktrr  |  |   |  |               |
-  |  mcause  | pmpaddr    |    |  |     |  | |  |  |  |   |  v               |
-  |  mtvec   |────────────┤    |  | +---+--+-+--+--+---+------+             |
-  |  mtval   |            |    |  | |       Fault Merge        |             |
-  |  mscratch| csr_rdata  |    |  | +--------------------------+             |
-  |  pmpcfg0 |──────┐     |    |  |          |                               |
-  |  pmpaddr |      |     |    |  |          | trap_cause_merged             |
-  |  pac_keys|──┐   |     |    |  |          |                               |
-  | ktrr_regs|──┤   |     |    |  |          |                               |
-  +----------+<─┤───┤─────┤────┘  |          |                               |
-       ^        |   |     |       └──────────┘                               |
-       |        v   v     |                                                  |
-       |  +----------+    |  +----------+   rd3   +----------+               |
-       |  |          |    |  | Reg File |─────--─>|  QARMA   |  pac_result   |
-       └──| ResultMux|────┤  | 32 x 32  | rd1──-->|  64-5    |──────┐        |
-          +----------+    |  | +3rd port |  rd2──>| 14 cyc   |      │        |
-                          |  +----------+        +-----------+      │        |
-                          |        stall <──── ~valid & is_pac      │        |
-                          +───────────────────┬─────────────────────┘────────+
-                                              | mem_addr
-                                    +---------+---------+
-                                    v                   v
-                              +----------+        +----------+
-                              |   DMEM   |        |   UART   |
-                              |  64 KiB  |        |  TX/RX   |
-                              +----------+        +----------+
-```
+![Architecture datapath](./img/architecture.svg)
 
 ### PC Priority
 
 ```
-if trap_taken  => trap_pc  (mtvec or mepc)
-else if branch => pc_target
-else           => pc + 4
+if trap_taken         => trap_pc  (mtvec or mepc)
+else if branch | jump => pc_target  (pc + imm, or rd1 + imm for jalr)
+else                  => pc + 4
 ```
 
 ### Result Mux
@@ -98,7 +51,7 @@ Handles UART TX/RX and the exit mechanism. IMEM supports both read and write pat
 CPU core. PC logic, immediate decoder, controller/ALU/regfile/CSR/PMP/QARMA instantiation,
 load extension (LB/LH/LBU/LHU alignment), store alignment (SB/SH byte enables),
 branch resolution, PMP + PAC + KTRR fault merge, result mux, and stall gating.
-QARMA-64 engine stalls the pipeline for 14 cycles during PAC/AUT instructions.
+QARMA-64 engine stalls the pipeline for 13 cycles during PAC/AUT instructions.
 KTRR fault check is inline (two comparators, no separate module).
 
 ### `controller.sv`
@@ -139,16 +92,16 @@ against pmpaddr/pmpcfg. Faults merge with controller trap causes in `riscv_cpu.s
 
 | Address | Size | Description |
 |---------|------|-------------|
-| `0x00000000` | 64 KiB | IMEM — instruction memory (read-write, loaded from `imem.hex`, lockable via KTRR) |
-| `0x10000000` | 4 B | EXIT — write here to terminate simulation (value = return code) |
-| `0x40000000` | 4 B | UART data — write: TX byte, read: RX byte |
-| `0x40000004` | 4 B | UART LSR — bit 0: RX ready, bit 5: TX ready (always 1) |
-| `0x80000000` | 64 KiB | DMEM — data memory (read-write, loaded from `dmem.hex`) |
+| `0x00000000` | 64 KiB | IMEM, instruction memory (read-write, loaded from `imem.hex`, lockable via KTRR) |
+| `0x10000000` | 4 B | EXIT, write here to terminate simulation (value = return code) |
+| `0x40000000` | 4 B | UART data, write: TX byte, read: RX byte |
+| `0x40000004` | 4 B | UART LSR, bit 0: RX ready, bit 5: TX ready (always 1) |
+| `0x80000000` | 64 KiB | DMEM, data memory (read-write, loaded from `dmem.hex`) |
 
 ### UART
 
-- **TX**: Write a byte to `0x40000000`. Output via `$write`/`$fflush`.
-- **RX**: Poll LSR bit 0. When set, read byte from `0x40000000`. Reading clears the ready flag.
+- TX: Write a byte to `0x40000000`. Output via `$write`/`$fflush`.
+- RX: Poll LSR bit 0. When set, read byte from `0x40000000`. Reading clears the ready flag.
   Input comes from stdin via DPI-C `dpi_getchar()` (non-blocking, raw terminal mode).
 
 ## Privilege Modes
@@ -170,11 +123,12 @@ When `trap_cause != 0`:
 
 1. `mepc ← PC` (faulting instruction address)
 2. `mcause ← trap_cause`
-3. `mstatus.MPP ← current privilege`
-4. `mstatus.MPIE ← mstatus.MIE`
-5. `mstatus.MIE ← 0`
-6. `privilege ← M`
-7. `PC ← mtvec`
+3. `mtval ← trap_val` (faulting address for PMP/KTRR, faulting pointer for PAC, 0 otherwise)
+4. `mstatus.MPP ← current privilege`
+5. `mstatus.MPIE ← mstatus.MIE`
+6. `mstatus.MIE ← 0`
+7. `privilege ← M`
+8. `PC ← mtvec`
 
 ### MRET
 
@@ -236,7 +190,7 @@ Each entry = one byte of `pmpcfg0` (entry 0 = bits [7:0], entry 3 = bits [31:24]
 
 | Bit | Field | Description |
 |-----|-------|-------------|
-| 7 | L | Lock — when set, entry is locked and also enforced for M-mode |
+| 7 | L | Lock, when set the entry is locked and also enforced for M-mode |
 | 6:5 | — | Reserved (WIRI) |
 | 4:3 | A | Address matching mode |
 | 2 | X | Execute permission |
@@ -254,8 +208,8 @@ Each entry = one byte of `pmpcfg0` (entry 0 = bits [7:0], entry 3 = bits [31:24]
 
 ### NAPOT Address Encoding
 
-For a region of size `2^n` bytes at base address `base`:
-`pmpaddr = (base >> 2) | ((1 << (n-2)) - 1)`
+For a region of size `2^n` bytes at base address `base` (n >= 3):
+`pmpaddr = (base >> 2) | ((1 << (n-3)) - 1)`
 
 ### Matching & Permissions
 
@@ -289,7 +243,7 @@ valid on cycle 13).
 ## Pointer Authentication Code (PAC)
 
 Signs and verifies pointers using QARMA-64-5 (tweakable block cipher).
-Each pointer gets a cryptographic tag tied to a context value, so corrupted pointers fail verification.
+Each pointer gets a cryptographic tag tied to a context value. Corrupted or tampered pointers fail verification.
 
 ### Instructions
 
@@ -302,8 +256,8 @@ Custom-0 opcode space (`0x0B`), R-type encoding. Allowed in both M-mode and U-mo
 | 0000001 | 000 | AUTIA rd,rs1,rs2 | trap(18) if PAC(rs1, rs2, key_ia) != rd |
 | 0000001 | 001 | AUTDA rd,rs1,rs2 | trap(18) if PAC(rs1, rs2, key_da) != rd |
 
-- **PACIA/PACDA**: Compute a 32-bit authentication code from pointer (rs1), modifier (rs2), and key. Result written to rd.
-- **AUTIA/AUTDA**: Recompute the PAC and compare against rd. If mismatch, trap with mcause=18 and mtval=rs1.
+- **PACIA/PACDA:** Compute a 32-bit authentication code from pointer (rs1), modifier (rs2), and key. Result goes in rd.
+- **AUTIA/AUTDA:** Recompute the PAC and compare against rd. On mismatch, trap with mcause=18 and mtval=rs1.
 - funct7[0]: 0 = sign (PAC), 1 = authenticate (AUT)
 - funct3[0]: 0 = IA key, 1 = DA key
 
@@ -325,12 +279,12 @@ Properties: involutory S-box (σ₀ = σ₀⁻¹), involutory MixColumns (M = M�
 ### PAC Key CSRs
 
 128-bit keys split across 4 CSRs each. Layout: `k0 = {key1, key0}` (core), `w0 = {key3, key2}` (whitening).
-M-mode only — U-mode access traps as illegal instruction. U-mode can execute PAC/AUT instructions
-(keys are used internally but not readable).
+M-mode only. U-mode access traps as illegal instruction. U-mode can still execute PAC/AUT instructions
+since the keys are used internally but not readable.
 
 ## Kernel Text Read-Only Region (KTRR)
 
-Locks a physical address range so nothing can write to it — not even M-mode.
+Locks a physical address range so nothing can write to it, not even M-mode.
 Once locked, stores to the protected range trap with mcause=24. Loads and fetches still work.
 
 ### CSRs
@@ -339,17 +293,19 @@ Once locked, stores to the protected range trap with mcause=24. Loads and fetche
 |---------|------|-------------|
 | `0x7C8` | ktrr_base | Start address of locked region (byte address, inclusive) |
 | `0x7C9` | ktrr_limit | End address of locked region (byte address, exclusive) |
-| `0x7CA` | ktrr_lock | Bit 0: locked. Write-once — once set, cannot be cleared until reset. |
+| `0x7CA` | ktrr_lock | Bit 0: locked. Write-once, cannot be cleared until reset. |
 
 ### Behavior
 
-- **Before lock**: All three CSRs are freely writable. IMEM is read-write.
-- **After lock** (`ktrr_lock[0] == 1`):
-  - Writes to `ktrr_base`, `ktrr_limit`, and `ktrr_lock` are silently ignored.
-  - Stores to addresses in `[ktrr_base, ktrr_limit)` trap with mcause=24, mtval=faulting address.
-  - Loads and instruction fetches from the region are unaffected.
-- **Reset**: All three registers reset to zero (unlocked, no region defined).
-- **Note**: If `ktrr_base >= ktrr_limit`, the range is empty and no stores are blocked.
+Before locking, all three CSRs are freely writable and IMEM is read-write.
+
+After locking (`ktrr_lock[0] == 1`):
+- Writes to `ktrr_base`, `ktrr_limit`, and `ktrr_lock` are silently ignored.
+- Stores to addresses in `[ktrr_base, ktrr_limit)` trap with mcause=24, mtval=faulting address.
+- Loads and instruction fetches from the region are unaffected.
+
+All three registers reset to zero (unlocked, no region defined).
+If `ktrr_base >= ktrr_limit`, the range is empty and no stores are blocked.
 
 ### Fault
 
@@ -357,7 +313,7 @@ Once locked, stores to the protected range trap with mcause=24. Loads and fetche
 |-------|--------|-------|
 | KTRR store | 24 | Faulting store address |
 
-KTRR sits after PAC and before PMP data faults in the priority chain. It only fires on stores.
+KTRR sits after PAC and before PMP data faults in the priority chain. Only fires on stores.
 
 ## Linker Layout
 

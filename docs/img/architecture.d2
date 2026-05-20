@@ -1,0 +1,92 @@
+# RISC-V MIE datapath overview.
+#
+# Render:
+#   d2 --layout=elk --pad=20 docs/img/architecture.d2 docs/img/architecture.svg
+#
+# Live iteration:
+#   d2 --layout=elk --watch docs/img/architecture.d2
+#
+# Notes on abstractions:
+#   - PC reg + next-pc mux are merged into one "PC" node.
+#   - Branch-target adder (pc+imm / rd1+imm for JALR) is folded into the
+#     "imm_ext -> PC: br_tgt" edge.
+#   - AUT comparator (qarma_result vs rd3) is folded into the
+#     "qarma -> fault_merge: pac_fail" edge; rd3 is shown separately.
+#   - Fault Merge and Imm Ext are inline always_comb in riscv_cpu.sv,
+#     shown here as blocks for readability.
+
+direction: right
+
+classes: {
+  datapath: { style: { fill: "#dbeafe"; stroke: "#1e3a8a"; border-radius: 4; font-size: 28 } }
+  control:  { style: { fill: "#dcfce7"; stroke: "#166534"; border-radius: 4; font-size: 28 } }
+  fault:    { style: { fill: "#fee2e2"; stroke: "#991b1b"; border-radius: 4; font-size: 28 } }
+  crypto:   { style: { fill: "#ede9fe"; stroke: "#6d28d9"; border-radius: 4; font-size: 28 } }
+  mux:      { style: { fill: "#fef3c7"; stroke: "#92400e"; border-radius: 4; font-size: 28 } }
+}
+
+# global edge label styling
+(** -> **)[*].style.font-size: 30
+(** -> **)[*].style.font-color: "#0D32B2"
+(** -> **)[*].style.bold: true
+
+imem: "IMEM\n64 KiB" { class: datapath }
+
+cpu: "RISC-V CPU" {
+  style: { stroke-dash: 4; fill: "#fafafa"; font-size: 40; bold: true }
+  direction: right
+
+  pc:          "PC\nreg + next-pc mux\n(trap / br / +4)" { class: mux }
+  imm_ext:     "Imm Ext"          { class: mux }
+  controller:  "Controller"       { class: control }
+  alu:         "ALU\nRV32IM"      { class: datapath }
+  reg_file:    "Reg File\n32x32"  { class: datapath }
+  qarma:       "QARMA-64-5\n14 cyc" { class: crypto }
+  result_mux:  "Result Mux"       { class: mux }
+  pmp:         "PMP\n4 ent"       { class: fault }
+  fault_merge: "Fault Merge"      { class: fault }
+  csr:         "CSR Unit\nmstatus/mepc/mcause\nmtvec/mtval/mscratch\npmp/pac/ktrr regs" { class: crypto }
+
+  # datapath
+  imm_ext     -> alu:        imm
+  imm_ext     -> pc:         br_tgt
+  reg_file    -> alu:        rd1,rd2
+  reg_file    -> qarma:      rd1,rd2
+  reg_file    -> fault_merge: rd3
+  alu         -> result_mux: alu_res
+  alu         -> pmp:        addr
+  qarma       -> result_mux: pac_res
+  csr         -> result_mux: csr_rd
+  result_mux  -> reg_file:   wb
+
+  # control
+  controller  -> alu:         ctrl
+  controller  -> result_mux:  rsel
+  controller  -> qarma:       is_pac
+  controller  -> fault_merge: ctrl_trap
+  csr         -> controller:  priv
+
+  # fault chain
+  pmp         -> fault_merge: pmp_flt
+  qarma       -> fault_merge: pac_fail
+  csr         -> fault_merge: ktrr_chk
+  fault_merge -> csr:         cause
+
+  # csr fan-out
+  csr -> pmp:   pmp_cfg
+  csr -> qarma: keys
+  csr -> pc:    trap_pc
+}
+
+dmem: "DMEM\n64 KiB" { class: datapath }
+uart: "UART"         { class: control }
+
+imem            -> cpu.controller: instr
+imem            -> cpu.imm_ext:    instr
+cpu.pc          -> imem:           pc
+cpu.alu         -> dmem:           addr
+cpu.alu         -> uart:           addr
+cpu.reg_file    -> dmem:           store
+cpu.reg_file    -> uart:           store
+dmem            -> cpu.result_mux: rdata
+uart            -> cpu.result_mux: rdata
